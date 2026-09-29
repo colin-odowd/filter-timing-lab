@@ -1,4 +1,15 @@
 (function(root){
+function coefficients(p){
+ const T=p.dt/1000,fo=1/p.tau,D=4/(T*T)+2*Math.SQRT2*fo/T+fo*fo;
+ return {fo,D,b0:fo*fo/D,b1:2*fo*fo/D,b2:fo*fo/D,a1:(2*fo*fo-8/(T*T))/D,a2:(4/(T*T)-2*Math.SQRT2*fo/T+fo*fo)/D};
+}
+function createFilter(p){
+ const alpha=(p.dt/1000)/(p.tau+p.dt/1000),c=coefficients(p);
+ let y=0,x1=0,x2=0,y1=0,y2=0;
+ return x=>{if(p.filter!=='butterworth'){y+=alpha*(x-y);return y;}
+ y=c.b0*x+c.b1*x1+c.b2*x2-c.a1*y1-c.a2*y2;
+ x2=x1;x1=x;y2=y1;y1=y;return y;};
+}
 function simulate(p,duration=185){
  const T=p.dt/1000,alpha=T/(p.tau+T);let seed=73191;
  const rand=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/4294967296};
@@ -15,14 +26,14 @@ function simulate(p,duration=185){
  case 'steps':return .85*noise(cycle+60000)+.15*n;
  default:return Math.sin(a);
  }};
- const source=[],ideal=[],late=[];let y=0;
- for(let i=0;i*T<=duration;i++){const x=signal(i*T,i);source.push({t:i*T,y:x});y+=alpha*(x-y);ideal.push({t:i*T,y});}
+ const source=[],ideal=[],late=[],onTimeFilter=createFilter(p),lateFilter=createFilter(p);let y=0;
+ for(let i=0;i*T<=duration;i++){const x=signal(i*T,i);source.push({t:i*T,y:x});y=onTimeFilter(x);ideal.push({t:i*T,y});}
  let release=0,lastIndex=-1; y=0;
  while(release*T<=duration){const t=release*T+(p.timing==='fixed'?1:rand())*p.late/1000;if(t>duration)break;const index=Math.min(source.length-1,Math.floor((t+1e-10)/T));const count=index-lastIndex;
- if(p.buffer==='queue'){for(let i=lastIndex+1;i<=index;i++)y+=alpha*(source[i].y-y);}else{y+=alpha*(source[index].y-y);}
+ if(p.buffer==='queue'){for(let i=lastIndex+1;i<=index;i++)y=lateFilter(source[i].y);}else{y=lateFilter(source[index].y);}
  late.push({t,y,skipped:p.buffer==='queue'?0:Math.max(0,count-1),consumed:count});lastIndex=index;release=Math.floor((t+1e-10)/T)+1;
- }return {source,ideal,late,alpha,T};
+ }return {source,ideal,late,alpha,T,coefficients:coefficients(p)};
 }
 function valueAt(events,t){let lo=0,hi=events.length;while(lo<hi){let m=(lo+hi)>>1;if(events[m].t<=t)lo=m+1;else hi=m;}return lo?events[lo-1].y:0;}
-root.FilterSimulation={simulate,valueAt};if(typeof module!=='undefined')module.exports=root.FilterSimulation;
+root.FilterSimulation={simulate,valueAt,coefficients,createFilter};if(typeof module!=='undefined')module.exports=root.FilterSimulation;
 })(globalThis);

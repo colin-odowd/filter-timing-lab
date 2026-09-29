@@ -1,7 +1,8 @@
 const $=id=>document.getElementById(id);const {simulate,valueAt}=FilterSimulation;
-let windowSeconds=60;
+let windowSeconds=60,activeFilter='first';
+const firstFormula=$('formula').innerHTML,firstExplanation=$('filterExplanation').innerHTML;
 let data,now=windowSeconds,playing=!matchMedia('(prefers-reduced-motion: reduce)').matches,lastFrame=0;
-function parameters(){return {dt:+$('dt').value,tau:+$('tau').value,freq:+$('freq').value,late:+$('late').value,timing:$('timingMode').value,wave:$('wave').value,buffer:$('buffer').value};}
+function parameters(){return {filter:activeFilter,dt:+$('dt').value,tau:+$('tau').value,freq:+$('freq').value,late:+$('late').value,timing:$('timingMode').value,wave:$('wave').value,buffer:$('buffer').value};}
 function rebuild(){const p=parameters();data=simulate(p);
 $('latenessLabel').textContent=p.timing==='fixed'?'Lateness every execution':'Maximum task lateness';
 $('latenessHint').textContent=p.timing==='fixed'?`Every execution is exactly ${p.late} ms late relative to its scheduled release. With overdue releases skipped, executions are ${(Math.floor(p.late/p.dt)+1)*p.dt} ms apart. Delays below dt shift execution time without skipping releases.`:'Each wake-up is delayed by 0–this many milliseconds, using repeatable random jitter.';
@@ -18,6 +19,33 @@ $('frequencyLabel').textContent=signalInfo[p.wave][0];$('waveHint').textContent=
 $('stressExplanation').textContent=p.wave==='stress'?'Why this exposes timing error: sustained levels give the on-time filter time to respond, while skipped updates make the late filter much slower. Set lateness to 0 to make the traces match, or process all buffered samples to reduce the error. This is a severe scheduling scenario, not a claim that all jitter causes large errors.':'';
 $('bufferHint').textContent=p.buffer==='queue'?'Every source sample advances the filter once. Results appear in batches when the task runs.':'Older unread samples are overwritten. The fixed coefficient is applied once per task execution.';
 $('code').textContent=`// Initialization: tau and dt are in seconds\nconst float tau = ${p.tau.toFixed(1)}f;\nconst float dt = ${(p.dt/1000).toFixed(3)}f; // fixed\nconst float alpha = dt / (tau + dt);\nfloat y = 0;\n\n// Whenever the scheduled task actually runs\n${p.buffer==='queue'?'while (queue_has_sample()) {\n    x = pop_oldest_sample();\n    y += alpha * (x - y);\n}\npublish(y);':'x = read_latest_sample();\ny += alpha * (x - y);\npublish(y);'}`;
+if(p.filter==='butterworth'){
+const c=data.coefficients;
+$('formula').innerHTML='fo = 1 / TC<br>D = 4 / dt² + 2√2·fo / dt + fo²<br>b₀ = fo² / D; b₁ = 2b₀; b₂ = b₀<br>a₁ = (2fo² − 8 / dt²) / D<br>a₂ = (4 / dt² − 2√2·fo / dt + fo²) / D<br>y[n] = b₀x[n] + b₁x[n−1] + b₂x[n−2]<br>− a₁y[n−1] − a₂y[n−2]';
+$('filterExplanation').textContent='Your D-based bilinear-transform Butterworth implementation, without prewarping. fo is in radians/second; TC and dt are in seconds. 2√2 ≈ 2.828. TC sets fo = 1/TC; it is not the 63% step-response time for this filter. Overshoot is normal. Each trace has independent x/y history, initially zero.';
+$('coefficient').textContent=`TC = ${p.tau.toFixed(1)} s · fo = ${c.fo.toFixed(6)} rad/s · analog cutoff = ${(c.fo/(2*Math.PI)).toFixed(5)} Hz · D = ${c.D.toFixed(6)} · b₀ = b₂ = ${c.b0.toPrecision(8)} · b₁ = ${c.b1.toPrecision(8)} · a₁ = ${c.a1.toPrecision(10)} · a₂ = ${c.a2.toPrecision(10)}`;
+$('code').textContent=`// Initialize once; TC and dt in seconds
+const double TC = ${p.tau.toFixed(1)};
+const double dt = ${(p.dt/1000).toFixed(3)};
+const double fo = 1.0 / TC;
+const double D = 4/(dt*dt) + 2*sqrt(2)*fo/dt + fo*fo;
+const double b0 = fo*fo/D, b1 = 2*b0, b2 = b0;
+const double a1 = (2*fo*fo - 8/(dt*dt))/D;
+const double a2 = (4/(dt*dt) - 2*sqrt(2)*fo/dt + fo*fo)/D;
+double x1=0, x2=0, y1=0, y2=0;
+
+double filter(double x) {
+    double y = b0*x + b1*x1 + b2*x2 - a1*y1 - a2*y2;
+    x2=x1; x1=x; y2=y1; y1=y;
+    return y;
+}
+
+// Whenever the task runs:
+${p.buffer==='queue'?'while (queue_has_sample())\n    y = filter(pop_oldest_sample());':'y = filter(read_latest_sample());'}
+publish(y);`;
+}else{$('formula').innerHTML=firstFormula;$('filterExplanation').innerHTML=firstExplanation;}
+$('filterHeading').textContent=p.filter==='butterworth'?'Two poles. Same timing test.':'Same filter. Different timing.';
+$('tauLabel').textContent=p.filter==='butterworth'?'TC parameter':'Time constant τ';
 $('interpretation').textContent=p.buffer==='queue'?'With a lossless queue, the filter computes the same sequence of values as the on-time filter. Wall-clock output still holds and jumps because results are published late.':'With a latest-value mailbox, long delays skip source samples and reduce the number of filter updates per second. The output can lag more and change shape. Jitter has no single effective cutoff frequency.';draw();}
 function context(id){const canvas=$(id),r=canvas.getBoundingClientRect(),d=Math.min(devicePixelRatio||1,2);if(canvas.width!==Math.round(r.width*d)||canvas.height!==Math.round(r.height*d)){canvas.width=Math.round(r.width*d);canvas.height=Math.round(r.height*d);}const c=canvas.getContext('2d');c.setTransform(d,0,0,d,0,0);c.clearRect(0,0,r.width,r.height);c.font='12px ui-monospace, monospace';return {c,w:r.width,h:r.height};}
 function draw(){if(!data)return;let {c,w,h}=context('plot');const left=42,right=w-12,top=16,bottom=h-28,start=now-windowSeconds;const X=t=>left+(t-start)/windowSeconds*(right-left),Y=v=>top+(1.25-v)/2.5*(bottom-top);
@@ -29,6 +57,8 @@ trace(data.source,'#75829a',1.3);trace(data.ideal,'#5be3ce',2);trace(data.late,'
 let error=0,referenceEnergy=0,previous=start;const times=[start,...data.ideal.filter(e=>e.t>start&&e.t<now).map(e=>e.t),...data.late.filter(e=>e.t>start&&e.t<now).map(e=>e.t),now].sort((a,b)=>a-b);for(const t of times){const mid=(previous+t)/2,d=valueAt(data.ideal,mid)-valueAt(data.late,mid);error+=d*d*(t-previous);referenceEnergy+=valueAt(data.ideal,mid)**2*(t-previous);previous=t;}
 $('rms').textContent=Math.sqrt(error/windowSeconds).toFixed(3);$('relativeRms').textContent=referenceEnergy>1e-12?(100*Math.sqrt(error/referenceEnergy)).toFixed(1)+'% of on-time output RMS':'Reference output is zero';const events=data.late.filter(e=>e.t>start&&e.t<=now);$('interval').textContent=events.length>1?((events.at(-1).t-events[0].t)/(events.length-1)*1000).toFixed(1):'—';const count=events.reduce((s,e)=>s+e.consumed,0),skips=events.reduce((s,e)=>s+e.skipped,0);$('skipped').textContent=count?(skips/count*100).toFixed(1):'0.0';}
 function playState(){ $('pause').textContent=playing?'Pause':'Resume';$('pause').setAttribute('aria-pressed',String(!playing));$('status').textContent=playing?'RUNNING':'PAUSED';}
+function selectFilter(kind){activeFilter=kind;for(const [id,value] of [['firstTab','first'],['butterTab','butterworth']]){$(id).setAttribute('aria-selected',String(kind===value));$(id).setAttribute('tabindex',kind===value?'0':'-1');}$('filterPanel').setAttribute('aria-labelledby',kind==='first'?'firstTab':'butterTab');rebuild();}
+for(const [id,kind] of [['firstTab','first'],['butterTab','butterworth']]){$(id).onclick=()=>selectFilter(kind);$(id).addEventListener('keydown',e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const next=e.key==='Home'?'first':e.key==='End'?'butterworth':activeFilter==='first'?'butterworth':'first';selectFilter(next);$(next==='first'?'firstTab':'butterTab').focus();}});}
 $('stressPreset').onclick=()=>{for(const [id,value] of Object.entries({dt:20,tau:6,freq:.01,late:200,timingMode:'random',wave:'stress',buffer:'latest',window:60}))$(id).value=String(value);windowSeconds=60;now=60;rebuild();};
 $('pause').onclick=()=>{playing=!playing;playState();};for(const id of ['dt','late','timingMode','tau','freq','wave','buffer'])$(id).addEventListener('input',rebuild);$('window').addEventListener('change',()=>{windowSeconds=+$('window').value;now=Math.max(now,windowSeconds);draw();});window.addEventListener('resize',draw);rebuild();playState();
 function frame(t){if(playing){now+=Math.min((t-lastFrame)/1000||0,.1);if(now>180)now=windowSeconds;draw();}lastFrame=t;requestAnimationFrame(frame);}requestAnimationFrame(frame);
